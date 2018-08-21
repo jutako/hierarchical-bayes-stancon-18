@@ -1,0 +1,218 @@
+---
+title: "Description of the IBI/HR data"
+author: "Jussi Korpela"
+date: '2018-08-08'
+output:
+  html_document:
+    theme: united
+    toc: yes
+  github_document: default
+  pdf_document:
+    toc: yes
+params:
+  #input_data_rds: /home/jussi/Dropbox/Shared/CORE_jkor/ukonkuva/analysis/HRV_blocks_noldus_ajo2alk_cw600/ibi/stancon18_fits/ibi-data_train4stan.rds
+  input_data_rds: /home/jkor/Dropbox/Shared/CORE_jkor/ukonkuva/analysis/HRV_blocks_noldus_ajo2alk_cw600/ibi/stancon18_fits/ibi-syndata_train4stan.rds
+  #opts: OPTS
+---
+
+# Info
+
+input dir: `r dirname(params$input_data_rds)`
+
+input file name: `r basename(params$input_data_rds)`
+
+# Rationale
+
+Provides descriptive statistics of the IBI/HR dataset to help set informative priors and thus make models identify correctly.
+
+
+# Setup
+```{r setup, include=FALSE}
+require(tidyverse)
+require(ggplot2)
+require(cowplot)
+
+# Set general options
+knitr::opts_knit$set(echo = TRUE,
+                     fig.width = 6,
+                     fig.asp = 0.618,
+                     out.width = "100%",
+                     fig.align = "center")
+```
+
+
+```{r}
+# A helper for saving
+my_saveplot <- function(p, savename,
+                        savedir = file.path('/home/jkor/Dropbox/Shared/CORE_jkor/ukonkuva/analysis/HRV_blocks_noldus_ajo2alk_cw600/ibi/stancon18_fits/','pubplot'),
+                        width = 180, height = 100){
+  cowplot::ggsave(filename = file.path(savedir, savename),
+                  plot = p, units = 'mm',
+                  width = width, height = height)
+}
+```
+
+
+
+# Loading data
+```{r variable_naming, include=FALSE}
+# Load data, make long format
+
+ibid <- readRDS(params$input_data_rds) %>%
+  ungroup() %>% #just to make sure
+  gather('variable', 'value', one_of('hr', 'hr.c', 'ibi', 'ibi.c'))
+head(ibid)
+
+```
+
+# Descriptive statistics
+
+## Global
+```{r}
+
+mystats <- function(ds){
+  tibble(n = nrow(ds),
+         mean = mean(ds$value),
+         median = median(ds$value),
+         sd = sd(ds$value),
+         mad = mad(ds$value))
+}
+
+dstats <- ibid %>%
+  group_by(variable) %>%
+  do(mystats(.))
+dstats
+```
+
+## Task
+```{r}
+dstats_task <- ibid %>%
+  group_by(variable, task) %>%
+  do(mystats(.))
+dstats_task %>% filter(variable == 'hr.c')
+```
+
+
+## Subject
+```{r}
+dstats_subj <- ibid %>%
+  group_by(variable, subject) %>%
+  do(mystats(.)) %>%
+  ungroup()
+
+tmp <- dstats_subj %>% 
+  filter(variable == 'hr') %>%
+  mutate(
+    mean_c = mean - (dstats %>% filter(variable == 'hr'))$mean,
+    median_c = median - (dstats %>% filter(variable == 'hr'))$median) %>%
+  select(subject, mean_c, median_c, mean, median, sd, mad)
+tmp
+```
+
+
+```{r}
+range(tmp$mean_c)
+```
+
+
+## Role 
+```{r}
+dstats_role <- ibid %>%
+  group_by(variable, role) %>%
+  do(mystats(.)) %>%
+  ungroup()
+
+tmp <- dstats_role %>% 
+  filter(variable == 'hr') %>%
+  mutate(
+    mean_c = mean - (dstats %>% filter(variable == 'hr'))$mean,
+    median_c = median - (dstats %>% filter(variable == 'hr'))$median) %>%
+  select(role, mean_c, median_c, mean, median, sd, mad)
+tmp
+```
+
+
+# Visualizations
+
+## Task
+```{r, out.width = '100%'}
+
+p <- ggplot(data = ibid) +
+  geom_boxplot(aes(x = task, y = value)) +
+  facet_wrap(~ variable, scales = 'free_y', ncol = 2) +
+  theme(axis.text.x  = element_text(angle=-90, vjust=0.5, hjust = 0))
+p
+
+```
+
+Plot only HR and save for later use:
+```{r}
+p <- ggplot(data = ibid %>% filter(variable == 'hr')) +
+  geom_boxplot(aes(x = task, y = value)) +
+  geom_hline(aes(yintercept = 88), linetype = 2) +
+  scale_color_brewer(type = 'qual', palette = 'Set2') +
+  theme_bw(base_family = 'sans') +
+  theme(axis.text.x  = element_text(angle = -45, vjust = 1, hjust = 0),
+        plot.margin = grid::unit(c(2,10,2,2), "mm")) +
+  labs(x = 'Task', y = 'Hear rate (bpm)',
+       title = 'Training data')
+p
+my_saveplot(p, 'traindata_by-task.pdf', width = 150)
+
+```
+
+
+## Subject
+```{r, out.width = '100%'}
+
+p <- ggplot(data = ibid) +
+  geom_boxplot(aes(x = subject, y = value)) +
+  facet_wrap(~ variable, scales = 'free_y', ncol = 2) +
+  theme(axis.text.x  = element_text(angle=-90, vjust=0.5, hjust = 0))
+p
+
+```
+
+```{r}
+pd <- ibid %>%
+  filter(variable == 'hr') %>%
+  mutate(value_c = value - (dstats %>% filter(variable == 'hr'))$mean)
+p <- ggplot(data = pd) +
+  geom_boxplot(aes(x = sbjnr, y = value_c)) +
+  geom_hline(aes(yintercept = 0)) + 
+  theme(axis.text.x  = element_text(angle=-90, vjust=0.5, hjust = 0))
+p
+
+```
+
+Plot only HR and save for later use:
+```{r}
+pd <- ibid %>%
+  filter(variable == 'hr') %>%
+  mutate(value_c = value - (dstats %>% filter(variable == 'hr'))$mean)
+p <- ggplot(data = pd) +
+  geom_boxplot(aes(x = sbjnr, y = value_c)) +
+  geom_hline(aes(yintercept = 0), linetype = 2) +
+  scale_color_brewer(type = 'qual', palette = 'Set2') +
+  theme_bw(base_family = 'sans') +
+  theme(axis.text.x  = element_text(angle = -45, vjust = 1, hjust = 0)) +
+  labs(x = 'Subject', y = 'Hear rate (bpm)',
+       title = 'Centered training data')
+my_saveplot(p, 'traindata_by-subject.pdf', width = 150)
+
+```
+
+
+## Role
+```{r, out.width = '100%'}
+
+p <- ggplot(data = ibid) +
+  geom_boxplot(aes(x = role, y = value)) +
+  facet_wrap(~ variable, scales = 'free_y', ncol = 2) +
+  theme(axis.text.x  = element_text(angle=-90, vjust=0.5, hjust = 0))
+p
+
+```
+
+
+

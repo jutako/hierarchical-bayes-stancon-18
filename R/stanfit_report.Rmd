@@ -1,0 +1,387 @@
+---
+title: "Analysis of IBI/HR hierarchical bayes model"
+author: "Jussi Korpela"
+date: '2018-08-08'
+output:
+  html_document:
+    theme: united
+    toc: yes
+  github_document: default
+  pdf_document:
+    toc: yes
+params:
+  input_data_rds: /home/jkor/Dropbox/Code/github/hierarchical-bayes-stancon-18/data/ibi-syndata_data.rds
+  stan_fit_rds: /home/jkor/Dropbox/Code/github/hierarchical-bayes-stancon-18/results/hr_20180821T143225/ibistan_task_sbj.rds
+---
+
+# Info
+
+fit dir: `r dirname(params$stan_fit_rds)`
+
+fit file name: `r basename(params$stan_fit_rds)`
+
+# Rationale
+
+Provides a standard report that can be used to assess IBI hierarchical bayes model convergence and results. Intended to be used to automatically create reports of model fit.
+
+Related to the Stancon 2018 conference abstract.
+
+
+# Setup
+```{r setup, include=FALSE}
+require(tidyverse)
+require(ggplot2)
+require(rstan) # for extractinf stuff from fit
+require(bayesplot) # for stan related plots
+require(DT) #for showing large tables
+
+# Set general options
+knitr::opts_knit$set(echo = TRUE,
+                     fig.width = 6,
+                     fig.asp = 0.618,
+                     out.width = "70%",
+                     fig.align = "center")
+
+# todo: temporary fix:
+PARAMS <- list(
+    use_testing_data = FALSE,
+    target_variable = 'hr',
+    n_cores = 4,
+    chains = 4,
+    iterations = 1e4,
+    seed = 38809485)
+#PARAMS <- attr(fit, 'user_params')
+
+OUT_WIDTH <- 15*100
+```
+
+# Loading data and creating descriptive labels
+```{r variable_naming, include=FALSE}
+# Load data
+
+fit <- readRDS(params$stan_fit_rds)
+ibid <- readRDS(params$input_data_rds)
+
+
+task_labels1 <- ibid %>%
+  group_by(task, task_idx) %>%
+  count() %>%
+  ungroup() %>%
+  arrange(task_idx) %>%
+  mutate(stan_name = sprintf('w[%d]', task_idx),
+         label = paste0(task,'_mean'),
+         group = 'task_mean')
+
+subj_labels1 <- ibid %>%
+  group_by(sbjnr, sbj_idx) %>%
+  count() %>%
+  ungroup() %>%
+  arrange(sbj_idx) %>%
+  mutate(stan_name = sprintf('s[%d]', sbj_idx),
+         label = paste0(sbjnr,'_mean'),
+         group = 'subj_mean')
+
+role_labels <- ibid %>%
+  group_by(role, role_idx) %>%
+  count() %>%
+  ungroup() %>%
+  arrange(role_idx) %>%
+  mutate(stan_name = sprintf('r[%d]', role_idx),
+         label = paste0(role,'_mean'),
+         group = 'role_mean')
+
+
+task_labels2 <- ibid %>%
+  group_by(task, task_idx) %>%
+  count() %>%
+  ungroup() %>%
+  arrange(task_idx) %>%
+  mutate(stan_name = sprintf('sd_w_tilde[%d]', task_idx),
+         label = paste0(task,'_sd'),
+         group = 'task_sd')
+
+subj_labels2 <- ibid %>%
+  group_by(sbjnr, sbj_idx) %>%
+  count() %>%
+  ungroup() %>%
+  arrange(sbj_idx) %>%
+  mutate(stan_name = sprintf('sd_sbj_tilde[%d]', sbj_idx),
+         label = paste0(sbjnr,'_sd'),
+         group = 'subj_sd')
+
+misc_labels <- data.frame(
+  stan_name = c('beta','sigma_e'),
+  label = c('mean_baseline', 'sd_baseline'),
+  group = 'baselines'
+)
+
+
+labs <- rbind(as.data.frame(task_labels1 %>%
+                              select(stan_name, label, group)),
+              as.data.frame(task_labels2 %>%
+                              select(stan_name, label, group)),
+              as.data.frame(subj_labels1 %>%
+                              select(stan_name, label, group)),
+              as.data.frame(subj_labels2 %>%
+                              select(stan_name, label, group)),
+              as.data.frame(role_labels %>%
+                              select(stan_name, label, group)),
+              misc_labels)
+labs <- as.tibble(labs) %>%
+  mutate(group = ordered(group,
+                         levels = c("baselines",
+                                    "task_mean","subj_mean","role_mean",
+                                    "task_sd","subj_sd")))
+#rownames(labs) <- labs$stan_name
+
+```
+
+
+# Convergence
+
+It took `r attr(fit, 'computation_time')` `r attr(attr(fit, 'computation_time'),'units')` to fit the model.
+
+## Fit summary
+```{r}
+fit
+```
+
+
+## Divergences
+```{r}
+is_divergent <- get_sampler_params(fit,
+                                inc_warmup=FALSE)[[1]][,'divergent__']
+sum(is_divergent)
+```
+
+
+### Scatterplot with divergences
+A plot of one task related effect (`w.1`) with respect to task hierarchy variance `sigma_w`. If the divergences are located in a certain area then that area is obviously hard to sample. If they are scattered randomly, a shorter step size would be appropriate.
+```{r}
+params_ps <- as.data.frame(rstan::extract(fit, permuted=FALSE))
+names(params_ps) <- gsub("chain:1.", "", names(params_ps), fixed = TRUE)
+names(params_ps) <- gsub("[", ".", names(params_ps), fixed = TRUE)
+names(params_ps) <- gsub("]", "", names(params_ps), fixed = TRUE)
+params_ps <- as.tibble(params_ps) %>%
+  mutate(is_divergent = ordered(is_divergent,
+                                levels = c(1, 0),
+                                labels = c('yes','no')))
+
+
+p <- ggplot(data = params_ps) +
+  geom_point(aes(x = w.1, y = log(sigma_w), color = is_divergent)) +
+  labs(title = 'Scatterplot projection of the "hierarchy funnel"')
+p
+```
+
+
+
+## Convergence measures as a searchable table
+```{r}
+diagd <- as.data.frame(summary(fit)$summary)
+diagd$parameter <- rownames(diagd)
+diagd <- as.tibble(diagd) %>%
+  select(parameter, n_eff, Rhat) 
+rownames(diagd) <- NULL
+diagd <- left_join(diagd, labs, by = c('parameter' = 'stan_name') )
+DT::datatable(diagd)
+```
+
+
+## Histograms of n_eff and Rhat
+
+```{r}
+p1a <- ggplot(data = diagd) +
+  geom_histogram(aes(x = Rhat), binwidth = 0.05)
+p1a
+
+p1b <- p1a + facet_wrap(~ group)
+p1b
+
+
+p2a <- ggplot(data = diagd) +
+  geom_histogram(aes(x = n_eff), binwidth = 10)
+p2a
+
+p2b <- p2a + facet_wrap(~ group)
+p2b
+
+# dev stuff:
+# pd <- diagd %>%
+#   gather(measure, value, n_eff, Rhat)
+# pd
+# 
+# my_plot <- function(ds){
+#   p <- ggplot(ds) +
+#     geom_dotplot(aes(x = value), method = 'histodot', bins = 100) +
+#     scale_y_continuous(NULL, breaks = NULL)
+#     #labs(y = unique(ds$measure))
+#     #facet_grid(measure ~ ., scales = 'free_x')
+#   p
+# }
+# 
+# tmp <- pd %>%
+#   group_by(measure) %>%
+#   nest() %>%
+#   mutate(plot = map(data, my_plot))
+# 
+# tmp$plot
+
+```
+
+
+## Convergence of chains: trace plots
+
+```{r convergence-traceplot, out.width = '100%'}
+
+# Plot MCMC trace from a given posterior
+# Needs to have three arguments in the order below
+my_mcmc_trace <- function(fit, posterior, param_df){
+  color_scheme_set("mix-blue-pink")
+  p <- mcmc_trace(posterior,
+                  pars = param_df$stan_name,
+                  n_warmup = attr(fit, 'stan_args')[[1]]$warmup,
+                  facet_args = list(labeller = label_parsed))
+  p + facet_text(size = 15)
+  p
+}
+
+
+# Plot parameters in groups if they exist in posterior
+# Uses tidyverse tools for looping over param_df$group
+# Outputs a tibble with list-columns
+plot_existing <- function(plot_fn, fit, param_df,
+                          inc_warmup = F){
+  
+  # extracted once to save time
+  posterior <- rstan::extract(fit, inc_warmup = inc_warmup, permuted = F)
+  
+  # a wrapper to make map() straightforward
+  plotter <- function(param_df){
+    plot_fn(fit, posterior, param_df)
+  }
+  
+  tmp <- labs %>% 
+    filter(stan_name %in% dimnames(posterior)$parameters) %>%
+    group_by(group) %>%
+    nest(.key = param_data) %>%
+    ungroup() %>%
+    mutate(plot = map(param_data, plotter))
+
+  tmp
+}
+
+# Generate plots and print
+#tmp <- plot_existing(my_mcmc_trace, fit,
+# labs %>% filter(group == 'subj_mean'))
+tmp <- plot_existing(my_mcmc_trace, fit, labs, inc_warmup = T)
+tmp$plot
+
+# dev:
+# plot_fn <- function(param_df){
+#   my_mcmc_trace(fit, param_df)
+# }
+# 
+# tmp <- labs %>% 
+#   group_by(group) %>%
+#   nest(.key = param_data) %>%
+#   ungroup() %>%
+#   filter(group == "task_mean") %>%
+#   mutate(plot = map(param_data, plot_fn))
+# tmp
+# plot_fn(fit, tmp$param_data[[1]])
+```
+
+
+
+# Visuals
+
+## Posterior distributions of selected variables
+
+```{r posterior-dists,  out.width = '100%'}
+
+# Plot posterior intervals
+# Needs to have three arguments in the order below
+my_mcmc_intervals <- function(fit, posterior, param_df){
+
+  param_sel <- param_df %>%
+    filter(stan_name %in% dimnames(posterior)$parameters)
+  posterior_sub <- posterior[ , , param_sel$stan_name]
+  dimnames(posterior_sub)[[3]] <- param_sel$label
+  
+  p <- bayesplot::mcmc_intervals(posterior_sub,
+                                 pars = param_sel$label)
+  p
+}
+
+# Generate plots and print
+#tmp <- plot_existing(my_mcmc_intervals, fit,
+#  labs %>% filter(group == 'subj_mean'))
+tmp <- plot_existing(my_mcmc_intervals, fit, labs, inc_warmup = F)
+tmp$plot
+# Note: it is important to exclude warmup!
+
+```
+
+
+
+```{r posterior_visualization, out.width = OUT_WIDTH, include = F}
+# first iteration: too verbose
+# 
+# posterior <- rstan::extract(fit, inc_warmup = F, permuted = F)
+# labs_sel <- labs %>%
+#   filter(stan_name %in% dimnames(posterior)$parameters)
+# posterior_sub <- posterior[ , , labs_sel$stan_name]
+# dimnames(posterior_sub)[[3]] <- labs_sel$label
+# 
+# 
+# my_posterior_plot <- function(posterior_data,
+#                               stan_pars,
+#                               target_variable){
+#   p <- bayesplot::mcmc_intervals(posterior_data,
+#                     pars = stan_pars) +
+#     labs(x = target_variable)
+#   p
+# }
+# 
+# # task mean
+# my_posterior_plot(posterior_sub,
+#                   as.character(task_labels1$label), PARAMS$target_variable)
+# 
+# # subject mean
+# if ( length(intersect(dimnames(posterior_sub)$parameters,
+#                       subj_labels1$label)) > 1 ){
+#   my_posterior_plot(posterior_sub,
+#                     as.character(subj_labels1$label),
+#                     PARAMS$target_variable)                        
+#                       }
+# 
+# # role mean
+# if ( length(intersect(dimnames(posterior_sub)$parameters,
+#                       role_labels$label)) > 1 ){
+#   my_posterior_plot(posterior_sub,
+#                     as.character(role_labels$label),
+#                     PARAMS$target_variable)
+# }
+# 
+# # task sd
+# my_posterior_plot(posterior_sub,
+#                   as.character(task_labels2$label), PARAMS$target_variable)
+# 
+# # subject sd
+# if ( length(intersect(dimnames(posterior_sub)$parameters,
+#                       subj_labels2$label)) > 1 ){
+#   my_posterior_plot(posterior_sub,
+#                     as.character(subj_labels2$label),
+#                     PARAMS$target_variable)
+# }
+# 
+# # misc
+# if ( length(intersect(dimnames(posterior_sub)$parameters,
+#                       misc_labels$label)) > 1 ){
+#   my_posterior_plot(posterior_sub,
+#                     as.character(misc_labels$label),
+#                     PARAMS$target_variable)
+# }
+```
+
